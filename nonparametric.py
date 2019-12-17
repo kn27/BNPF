@@ -71,21 +71,21 @@ class NPNMF:
         '''
         self.threshold = float(kwargs.get('threshold', 1e-4))
         self.max_iter = int(kwargs.get('max_iter', 20))
-        self.alpha = float(kwargs.get('alpha', 2.))
-        self.beta_shape_prior = float(kwargs.get('beta_shape_prior', 1.)) #a
-        self.beta_rate_prior = float(kwargs.get('beta_rate_prior', 1.))   #b          
-        self.s_rate_prior = float(kwargs.get('s_rate_prior', 0.1))       #c
+        self.alpha = float(kwargs.get('alpha', 1.1))
+        self.beta_shape_prior = float(kwargs.get('beta_shape_prior', 0.3)) #a
+        self.beta_rate_prior = float(kwargs.get('beta_rate_prior', 0.3))   #b          
+        self.s_rate_prior = float(kwargs.get('s_rate_prior', 1.0))       #c
         
     def initialize(self):
         # variational parameters for Beta 
-        self._beta_shape = np.full((self.D, self.T), 0.3)
-        self._beta_rate = np.full((self.D, self.T), 0.3)
+        self._beta_shape = np.full((self.D, self.T), 1.0)
+        self._beta_rate = np.full((self.D, self.T), 1.0)
         self._beta_mean = self._beta_shape /self._beta_rate #NOTE: added for caching
         self._elogbeta = digamma(self._beta_shape) - np.log(self._beta_rate) #NOTE: added for caching
         
         # variational parameters S 
-        self._s_shape = np.full(self.U, 0.3)
-        self._s_rate = np.full(self.U, 0.3)
+        self._s_shape = np.full(self.U, 1.0)
+        self._s_rate = np.full(self.U, 1.0)
         self._s_mean = self._s_shape/ self._s_rate #NOTE: added for caching
         self._elogs = digamma(self._s_shape) - np.log(self._s_rate) #NOTE: added for caching
         
@@ -107,16 +107,12 @@ class NPNMF:
     def update_phi(self):
         for u,d in self.nonzero:
             phi = self.sum_logbeta_logtheta(u,d)
-            self._phi[u,d,:] = (phi/np.sum(phi))[:-1]
+            self._phi[u,d,:] = copy.deepcopy((phi/np.sum(phi))[:-1])
 
     def update_phi_by_u_d(self, ud):
             u,d = ud
             phi = self.sum_logbeta_logtheta(u,d)
             self._phi[u,d,:] = (phi/np.sum(phi))[:-1]
-        
-    def update_phi_threaded(self):
-        pool = Pool(processes = 4)        
-        pool.map(self.update_phi_by_u_d, self.nonzero)
         
     def logpi(self,u,k):
         return np.log(self._v[u,k]) + np.sum(np.log(1 - self._v[u,:k]))
@@ -132,7 +128,7 @@ class NPNMF:
                        - np.log(1 - np.exp(elogv))
     
     def compute_scalar_rate_infsum(self, u):
-        Y = np.exp(self.logpi(u, self.T-1)) / self._v[u, self.T-1] * (1-self._v[u, self.T-1])
+        Y = np.exp(self.logpi(u, self.T-1) - np.log(self._v[u, self.T-1]) + np.log(1-self._v[u, self.T-1]))
         D = self.beta_shape_prior/ self.beta_rate_prior * self.D
         return Y * D
 
@@ -148,12 +144,14 @@ class NPNMF:
             self._s_shape[u] = self.alpha + np.sum(self.X[u,:])
             self._s_rate[u] = self.s_rate_prior + self.compute_scalar_rate_infsum(u) + self.compute_scalar_rate_finitesum(u)
         self._s_mean = self._s_shape/ self._s_rate
-            #self.ELBO()
         
     @staticmethod
     def solve_quadratic(A,B,C):
-        if A*(-C) < 1e-10:
-            return -C/B if -C/B > 1e-10 else 1e-10
+        if abs(A*C) < 1e-10:
+            if -C/B > 1e-10:
+                return -C/B
+            else:
+                return 1e-10
         s1 = (-B + np.sqrt(B**2 - 4*A*C)) / (2 * A)
         s2 = (-B - np.sqrt(B**2 - 4*A*C)) / (2 * A)
         if s1 > 0.0 and s1 <= 1.0 and s2 > 0.0 and s2 <= 1.0:
@@ -173,9 +171,10 @@ class NPNMF:
     def update_sticks(self): 
         for u in range(self.U):
             for k in range(self.T):
-                A = np.sum([self._v[u,l] * np.prod(1-self._v[u,:l])/(1-self._v[u,k]) * np.sum(self._beta_mean[:,l]) for l in range(k+1,self.T)]) \
+                A = np.sum([self._v[u,l] * np.prod(1-self._v[u,:l])/(1-self._v[u,k]) * np.sum(self._beta_mean[:,l]) \
+                            for l in range(k+1,self.T)]) \
                        - np.prod(1-self._v[u,:k]) * np.sum(self._beta_mean[:,k]) \
-                       + self.D * self.beta_shape_prior/self.beta_rate_prior * np.prod(1-self._v[u,:]) / self._v[u,k]        
+                       + self.D * self.beta_shape_prior/self.beta_rate_prior * np.prod(1-self._v[u,:]) / (1-self._v[u,k])        
                 A = A * self._s_mean[u]
                 C = -1 * self.X[u,:] @ self._phi[u,:,k]
                 C = C[0]
@@ -186,19 +185,6 @@ class NPNMF:
                     raise ValueError(f'Need to look into {u} and {k}')
                     
     
-    def update_sticks_threaded(self): 
-        pool = Pool(processes = 12)
-        def solve_quadratic_by_u_k(u,k):
-            A = np.sum([self._v[u,l] * np.prod(1-self._v[u,:l])/(1-self._v[u,k]) * np.sum(self._beta_shape[:,l]/ self._beta_rate[:,l]) for l in range(k,self.T)]) \
-                    - np.prod(1-self._v[u,:k]) * np.sum(self._beta_shape[:,k]/self._beta_rate[:,k]) \
-                    + self.D * self.beta_shape_prior/self.beta_rate_prior * np.prod(1-self._v[u,:]) / self._v[u,k]        
-            A = A * self._s_shape[u]/self._s_rate[u]
-            C = -1 * self.X[u,:] @ self._phi[u,:,k]
-            C = C[0]
-            B = self.alpha - 1 - C - A  + np.sum([self.X[u,d] * (1 - np.sum(self._phi[u,d,:])) for d in range(self.byuser[u]])]) 
-            self._v[u,k] = NPNMF.solve_quadratic(A, B, C)
-        pool.map_async(solve_quadratic_by_u_k, itertools.product(range(self.U), range(self.T)) )
-
     def get_ABC(self):
         A = np.zeros((self.U,self.T))
         B = np.zeros((self.U,self.T))
@@ -238,50 +224,55 @@ class NPNMF:
             self.update_phi() #q(phi_ud)
             t1 = time.time()
             print(f'Iter {_iter}: Update phi = {t1 - t0}')
+            #print(f'ElBO: {self.ELBO()}')
 
             #Update across user
             self.update_sticks() #q(v_uk)
             t2 = time.time()
             print(f'Iter {_iter}: Update user stick = {t2 - t1}')
+            #print(f'ElBO: {self.ELBO()}')
 
             self.update_sticks_scalars() #q(s_u)
             t3 = time.time()
             print(f'Iter {_iter}: Update user stick scalar = {t3 - t2}')
+            #print(f'ElBO: {self.ELBO()}')
 
             #Update across item
             self.update_items() #q(beta_d)
             t4 = time.time()
             print(f'Iter {_iter}: Update items = {t4 - t3}')
-            
+            #print(f'ElBO: {self.ELBO()}')
+
             #Validate
             ELBO = self.ELBO()
             print(f'Iter {_iter}: ELBO = {ELBO}, last_ELBO = {last_ELBO}')
             if _iter > 1 and abs(ELBO/last_ELBO - 1) < self.threshold:
                 print('Converged!')
                 break
-            elif _iter > self.max_iter:
+            elif _iter >= self.max_iter:
                 print(f'Stopped at {_iter}')
                 break
             else:
                 last_ELBO = ELBO
                             
-    def save_model(self):
+    def save_model(self, overwrite = True):
         for i in range(1,100):
-            if not os.path.exist(f'./model_{i}.npz'):
+            if overwrite or not os.path.exists(f'./model_{i}.npz'):
                 np.savez(f'./model_{i}.npz', 
                         v = self._v, 
                         beta_shape = self._beta_shape,
-                        beta_rate = self._beta.rate,
+                        beta_rate = self._beta_rate,
                         phi = self._phi,
                         s_shape = self._s_shape,
                         s_rate = self._s_rate)
+                print(f'Save as model_{i}.npz')
                 return 0
     
     def load_model(self, filename):
         loaded = np.load(filename)
         self._v = loaded['v']
         self._beta_shape = loaded['beta_shape']
-        self._beta.rate = loaded['beta_rate']
+        self._beta_rate = loaded['beta_rate']
         self._phi = loaded['phi']
         self._s_shape = loaded['s_shape']
         self._s_rate = loaded['s_rate'] 
@@ -295,12 +286,12 @@ class NPNMF:
         # from x_ud.log(sum(beta_dk @ theta_uk))
         s1 = np.sum([self.X[u,d] * np.sum(self.sum_logbeta_logtheta(u,d)) for u,d in self.nonzero])
 
-        # from v
-        s2 = np.sum([(self.alpha - 1) * np.log(1- self._v[u,k]) for u in range(self.U) for k in range(self.T)])
-
         # from sum(beta_dk * theta_uk)
-        s3 = -np.sum([(self.compute_scalar_rate_infsum(u) + self.compute_scalar_rate_finitesum(u)) * self._s_shape[u]/self._s_rate[u] for u in range(self.U)])
-
+        s2 = -np.sum([(self.compute_scalar_rate_infsum(u) + self.compute_scalar_rate_finitesum(u)) * self._s_shape[u]/self._s_rate[u] for u in range(self.U)])
+        
+        # from v
+        s3 = np.sum([(self.alpha - 1) * np.log(1- self._v[u,k]) for u in range(self.U) for k in range(self.T)])
+        
         # from beta
         s4 = np.sum([(self.beta_shape_prior-1) * (digamma(self._beta_shape[d,k]) - np.log(self._beta_rate[d,k])) - self.beta_rate_prior * self._beta_shape[d,k]/ self._beta_rate[d,k] for d in range(self.D) for k in range(self.T)])
         
@@ -313,7 +304,7 @@ class NPNMF:
         # normalizer for beta
         s7 = -np.sum([digamma(self._beta_shape[d,k]) - np.log(self._beta_rate[d,k]) for d in range(self.D) for k in range(self.T)])
         
-        print(s1,s2,s3,s4,s5,s6,s7)
+        #print(f'phi: {s1 +s2} , v: {s3}, beta: {s4 + s7} ,s :{s5 + s6}')
         return s1 + s2 + s3 + s4 + s5 + s6 + s7 
 
 
