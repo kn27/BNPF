@@ -10,7 +10,7 @@ if __name__ == "__main__":
     beta_rate_prior=0.3,
     s_rate_prior=1)
     X = scipy.sparse.csr_matrix(X)
-    nmf = NPNMF(X,T = 15, seed = 1, threshold = 1e-8)
+    nmf = NPNMF(X,T = 15, seed = 1, threshold = 1e-5)
     #nmf.load_model('model_1.npz')
     nmf.inference()
     # temp = copy.deepcopy(nmf._phi)
