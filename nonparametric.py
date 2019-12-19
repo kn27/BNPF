@@ -81,12 +81,12 @@ class NPNMF:
             self.load_model(saved_model_file)
         else:
             # variational parameters for Beta 
-            self._beta_shape = np.full((self.D, self.T), 1.0)
-            self._beta_rate = np.full((self.D, self.T), 1.0)
+            self._beta_shape = np.full((self.D, self.T), 0.3)
+            self._beta_rate = np.full((self.D, self.T), 0.3)
             
             # variational parameters S 
-            self._s_shape = np.full(self.U, 1.0)
-            self._s_rate = np.full(self.U, 1.0)
+            self._s_shape = np.full(self.U, 1.1)
+            self._s_rate = np.full(self.U, 1.1)
             
             # variational parameters for Z
             self._phi = np.zeros((self.U, self.D, self.T))
@@ -322,69 +322,6 @@ class NPNMF:
         
         print(f'phi: {s1 +s2} , v: {s3}, beta: {s4 + s7} ,s :{s5}')
         return s1 + s2 + s3 + s4 + s5 + s6 + s7 
-
-     def online_inference(self, est_total=None):
-        '''Fit the model to the data in X. X can be a scipy.sparse.csr_matrix
-        Parameters
-        ----------
-        X : array-like, shape (n_items, n_users)
-            Training data.
-        est_total : int
-            The estimated size of the entire data. Could be larger than the
-            actual size.
-        Returns
-        -------
-        self: object
-            Returns the instance itself.
-        '''
-        self._scale = float(self.U) / self.batch_size
-        self.bound = list()
-        for count in xrange(self.n_pass):
-            if self.verbose:
-                print 'Iteration %d: passing through the data...' % count
-            indices = np.arange(self.U)
-            if self.shuffle:
-                np.random.shuffle(indices)
-            for (i, istart) in enumerate(xrange(0, self.U, self.batch_size)):
-                print '\tMinibatch %d:' % i
-                idx = indices[istart: istart + self.batch_size]
-                mini_batch = self.X[idx]
-                if scipy.sparse.isspmatrix(mini_batch):
-                    mini_batch = mini_batch.toarray()
-                self.set_learning_rate(mini_batch, iter=count * self.U / self.batch_size + i)
-                self.partial_fit(mini_batch, idx=idx)
-                self.bound.append(self._stoch_bound(mini_batch, idx=idx))
-                
-    def partial_fit(self, X, idx=None):
-        '''Fit the data in X as a mini-batch and update the parameter by taking
-        a natural gradient step.
-        Parameters
-        ----------
-        X : array-like, shape (batch_size, n_feats)
-            Mini-batch data.
-        Returns
-        -------
-        self: object
-            Returns the instance itself.
-        '''
-        self.transform(X, idx=idx)
-        # take a (natural) gradient step
-
-        ratio = X / self._xexplog(idx=idx)
-        self.nu_t = (1 - self.rho) * self.nu_t + self.rho * \
-            (self.a + self._scale * np.exp(self.Elogt) * np.exp(self.Elogb[idx].T).dot(ratio))
-        self.rho_t = (1 - self.rho) * self.rho_t + self.rho * \
-            (self.b + self._scale * self.Eb[idx].T.dot(self.Elam))
-        self.Et, self.Elogt = comp_gamma_expectations(self.nu_t, self.rho_t)
-        return self
- 
-
-
-
-
-
-
-
 
 
 
