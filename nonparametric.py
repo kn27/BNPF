@@ -10,8 +10,11 @@ import time
 from scipy.special import digamma
 from multiprocessing import Pool
 import itertools
+import seaborn as sns
 
-def simulate(U,D,K,alpha = 2, beta_shape_prior = 1, beta_rate_prior = 1, s_rate_prior = 1):
+def simulate(U,D,K,alpha = 2, beta_shape_prior = 1, beta_rate_prior = 1, s_rate_prior = 1, seed = None):
+    if seed is not None:
+        np.random.seed(seed)
     s = np.random.gamma(shape = alpha, scale = 1/s_rate_prior, size = U)
     v = np.random.beta(a = 1, b = alpha, size = (U,K))
     theta = np.array([[s[u] * v[u,k] * np.prod(1-v[u,:k]) for k in range(K)] for u in range(U)])  
@@ -21,26 +24,6 @@ def simulate(U,D,K,alpha = 2, beta_shape_prior = 1, beta_rate_prior = 1, s_rate_
 
 class NPNMF:
     def __init__(self, X, T=512, seed=None, saved_model_file = None, **kwargs):
-        '''
-        BN = LVI_BP_NMF(X, K=512, smoothness=100, seed=None, alpha=2.,
-                        a0=1., b0=1., c0=1e-6, d0=1e-6)
-        Required arguments:
-            X:              U-by-D nonnegative matrix (numpy.ndarray)
-                            the data to be factorized
-                            Assume scipy sparse matrix format
-        Optional arguments:
-            K:              the size of the initial dictionary
-                            will be truncated to a proper size
-            seed:           the random seed to control the random
-                            initialization
-                            **variational inference can only converge to local
-                            optimum, thus try different seeds**
-            alpha:          hyperparameter for activation.
-            a0, b0:         both must be specified
-                            hyperparameters for sparsity
-            c0, d0:         both must be specified
-                            hyperparameters for Gaussian noise
-        '''
         self.X = X.copy()
         self.U, self.D = self.X.shape
         self.T = T
@@ -93,14 +76,15 @@ class NPNMF:
             #self._phi_before_normalization = np.zeros((self.U, self.D, self.T + 1)) # This is exp(E(log_theta_uk) + E(log_beta_dk))
 
             # variational parameters for sticks
-            self._v = np.random.beta(1, self.alpha, size = (self.U, self.T))
+            self._v = 0.00001*(self.T+1 - np.array([range(1,self.T+1) for _ in range(self.U)]))
+            #np.random.beta(1, self.alpha, size = (self.U, self.T))
             
         self._beta_mean = self._beta_shape /self._beta_rate #NOTE: added for caching
         self._elogbeta = digamma(self._beta_shape) - np.log(self._beta_rate) #NOTE: added for caching
         
         self._s_mean = self._s_shape/ self._s_rate #NOTE: added for caching
         self._elogs = digamma(self._s_shape) - np.log(self._s_rate) #NOTE: added for caching
-            
+        
         self._logpi = np.array([[np.log(self._v[u,k]) + np.sum(np.log(1 - self._v[u,:k])) for k in range(self.T)] for u in range(self.U)])
 
     def sum_logbeta_logtheta(self,u,d):
@@ -142,6 +126,8 @@ class NPNMF:
             self._s_shape[u] = self.alpha + np.sum(self.X[u,:])
             self._s_rate[u] = self.s_rate_prior + self.compute_scalar_rate_infsum(u) + self.compute_scalar_rate_finitesum(u)
         self._s_mean = self._s_shape/ self._s_rate
+        self._elogs = digamma(self._s_shape) - np.log(self._s_rate)
+        self.update_phi()
         
     @staticmethod
     def solve_quadratic(A,B,C):
@@ -190,6 +176,8 @@ class NPNMF:
                 except:
                     raise ValueError(f'Need to look into {u} and {k}')
         self._logpi = np.array([[np.log(self._v[u,k]) + np.sum(np.log(1 - self._v[u,:k])) for k in range(self.T)] for u in range(self.U)])
+        self.update_phi()
+        
          
     def ethetasum(self,k):
         return np.sum([(self._s_mean[u] + np.exp(self._logpi[u,k])) for u in range(self.U)])
@@ -197,12 +185,14 @@ class NPNMF:
     def ebetasum(self,k):
         return np.sum(self._beta_mean[:,k])
                        
-    def update_items(self):
+    def update_items(self):        
         for d in range(self.D):
             for k in range(self.T):
                 self._beta_shape[d,k] = self.beta_shape_prior + self.X[:,d].T @ self._phi[:,d,k]
                 self._beta_rate[d,k] = self.beta_rate_prior + self.ethetasum(k)
         self._beta_mean = self._beta_shape/self._beta_rate
+        self._elogbeta = digamma(self._beta_shape) - np.log(self._beta_rate) 
+        #self.update_phi()
                 
     def inference(self):
         _iter = 0
@@ -214,29 +204,35 @@ class NPNMF:
             
             #Update phi
             self.update_phi() #q(phi_ud)
+            #print(1, self.logjoint())
             t1 = time.time()
             #print(f'Iter {_iter}: Update phi = {t1 - t0}')
             #print(f'ElBO: {self.ELBO()}')
 
             #Update across user
             self.update_sticks() #q(v_uk)
+            #print(2, self.logjoint())
             t2 = time.time()
             #print(f'Iter {_iter}: Update user stick = {t2 - t1}')
             #print(f'ElBO: {self.ELBO()}')
 
             self.update_sticks_scalars() #q(s_u)
+            #print(3, self.logjoint())
+            self._theta = np.array([[self._s_mean[u] * np.exp(self._logpi[u,k]) for k in range(self.T)] for u in range(self.U)])
             t3 = time.time()
             #print(f'Iter {_iter}: Update user stick scalar = {t3 - t2}')
             #print(f'ElBO: {self.ELBO()}')
 
             #Update across item
             self.update_items() #q(beta_d)
+            #print(4, self.logjoint())
+            self._beta = self._beta_shape/self._beta_rate
             t4 = time.time()
             #print(f'Iter {_iter}: Update items = {t4 - t3}')
             #print(f'ElBO: {self.ELBO()}')
 
             print(f'logjoint:{self.logjoint()}')
-
+            self.posterior_check(False, filename = f'test_{_iter}.png')
             # #Validate
             logjoint = self.logjoint()
             print(f'Iter {_iter}: logjoint = {logjoint}, last_logjoint = {last_logjoint}')
@@ -248,7 +244,9 @@ class NPNMF:
                 break
             else:
                 last_logjoint = logjoint
-            
+        self._beta = self._beta_shape/self._beta_rate
+        self._theta = np.array([[self._s_shape[u]/self._s_rate[u] * self._v[u,k] *np.prod(1-self._v[u,:k]) for k in range(self.T)] for u in range(self.U)])
+        
             # #Validate
             # ELBO = self.ELBO()
             # print(f'Iter {_iter}: ELBO = {ELBO}, last_ELBO = {last_ELBO}')
@@ -289,9 +287,7 @@ class NPNMF:
 
     def logjoint(self):
         X_flatten = self.X.toarray().flatten()
-        beta = self._beta_shape/self._beta_rate
-        theta = np.array([[self._s_shape[u]/self._s_rate[u] * self._v[u,k] *np.prod(1-self._v[u,:k]) for k in range(self.T)] for u in range(self.U)])
-        mu = (theta @ beta.T).flatten()
+        mu = (self._theta @ self._beta.T).flatten()
         mu = mu[X_flatten > 0]
         X_flatten = X_flatten[X_flatten > 0]
         assert mu.shape == X_flatten.shape, f'{mu.shape} vs {X_flatten.shape}'
@@ -323,6 +319,29 @@ class NPNMF:
         print(f'phi: {s1 +s2} , v: {s3}, beta: {s4 + s7} ,s :{s5}')
         return s1 + s2 + s3 + s4 + s5 + s6 + s7 
 
+    def posterior_check(self,user = True, filename = None):
+        poisson_mean = self._theta @ self._beta.T
+        poisson_mean[self.X.toarray() == 0] = 0
+        simulated = np.random.poisson(poisson_mean)
+        #posterior check
+        if user:
+            ax = sns.distplot(np.sum(self.X,0),hist=True, kde=True)
+            sns.distplot(np.sum(simulated,0),hist=True, kde=True)
+            ax.set_title('Distribution of users by total rating')
+            ax.set(xlabel='Total rating per user')
+            ax.legend(['Observed Data', 'Simulated from fitted model'])
+            ax.plot()
+        else:
+            ax = sns.distplot(np.sum(self.X,1),hist=True, kde=True)
+            sns.distplot(np.sum(simulated,1),hist=True, kde=True)
+            ax.set_title('Distribution of items by total rating')
+            ax.set(xlabel='Total rating per item')
+            ax.legend(['Observed Data', 'Simulated from fitted model'])
+            ax.plot()
+        if filename:
+            fig = ax.get_figure()
+            fig.savefig(filename)
+            fig.clf()
 
 
 
@@ -443,9 +462,9 @@ def advi():
 #     # model = vi(rating_valid, rating_valid, max_iter = 50)
 
 if __name__ == "__main__":
-    X, theta, beta, s, v = simulate(200, 100, 20, 1, 1, 1, 1)
+    X, theta, beta, s, v = simulate(U = 100, D= 100, K = 10, alpha = 1.1, beta_shape_prior =  0.3, beta_rate_prior = 0.3, s_rate_prior = 1.1, seed = 0)
     X = scipy.sparse.csr_matrix(X)
-    nmf = NPNMF(X,T = 30, seed = 1, threshold = 1e-8)
+    nmf = NPNMF(X,T = 15, seed = 1, threshold = 1e-8)
     nmf.inference()
     # temp = copy.deepcopy(nmf._phi)
     # nmf = NPNMF(X,T = 30, seed = 0, threshold = 1e-8)

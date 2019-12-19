@@ -47,10 +47,10 @@ class HPF:
         if saved_model_file:
             self.load_model(saved_model_file)
         else:
-            self.a0,self.b0,self.a1 = 0.3,1,0.3  #global parameters for all users
-            self.m0,self.n0,self.m1 = 0.3,1,0.3  #global parameters for all movies
-            self.a2 = 2
-            self.m2 = 2
+            self.a0,self.b0,self.a1 = 0.3,1.0,0.3  #global parameters for all users
+            self.m0,self.n0,self.m1 = 0.3,1.0,0.3  #global parameters for all movies
+            self.a2 = 2.0
+            self.m2 = 2.0
             self._kappa_rate = np.array([0.3]*self.U) 
             self._tau_rate = np.array([0.3]*self.D) 
             self._kappa_shape = self.a0 + self.K * self.a1
