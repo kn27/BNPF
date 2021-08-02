@@ -14,9 +14,14 @@ import hickle as hkl
 import argparse
 
 if __name__ == "__main__":
+    """
+    Preprocess taxi trip data and divide the map into a grid of gridsize x gridsize
+    Output: Grid, Grid_AggregatedTrip, Matrix, Statemap
+    """
     parser = argparse.ArgumentParser()
-    parser.add_argument('input',default = r'yellow_tripdata_2016-01.csv')
-    parser.add_argument('gridsize',default = 100, type = int)
+    parser.add_argument('--input',default = r'./data/manhattan/raw/yellow_tripdata_2016-01.txt')
+    parser.add_argument('--gridsize',default = 50, type = int)
+    parser.add_argument('--output',default = r'./data/manhattan/processed')
     args = parser.parse_args()
     time0 = time.time()
     funclist = []
@@ -28,7 +33,7 @@ if __name__ == "__main__":
     
     man = get_zones()
     grid = get_joint_grid(man, args.gridsize)
-    grid.to_csv(f'{args.gridsize}_Grid.csv', index = True)
+    grid.to_csv(f'{args.output}/{args.gridsize}_Grid.csv', index = True)
     pool = mp.Pool(4)
     for tax_sample in tax:
         f = pool.apply_async(process, args = [tax_sample], kwds = {'zones':grid})
@@ -40,11 +45,11 @@ if __name__ == "__main__":
         i += 1
         print(f'Complete task {i}')
     aggregated = pd.concat(transitions)
-    aggregated.to_csv(f'{args.gridsize}_Grid_AggregatedTrip.csv', index = False)
+    aggregated.to_csv(f'{args.output}/{args.gridsize}_Grid_AggregatedTrip.csv', index = False)
     print(f'Time:{time.time() - time0}')
-    aggregated = pd.read_csv(f'{args.gridsize}_Grid_AggregatedTrip.csv')
+    aggregated = pd.read_csv(f'{args.output}/{args.gridsize}_Grid_AggregatedTrip.csv')
     count,statemap = group_and_map(aggregated)
     A = build_matrix(count,statemap)
-    hkl.dump(A, f'{args.gridsize}_Matrix.hkl')
-    hkl.dump(statemap,f'{args.gridsize}_Statemap.hkl')
+    hkl.dump(A, f'{args.output}/{args.gridsize}_Matrix.hkl')
+    hkl.dump(statemap,f'{args.output}/{args.gridsize}_Statemap.hkl')
 
